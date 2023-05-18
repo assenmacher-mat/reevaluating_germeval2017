@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-import os
 import logging
 import argparse
 import time
 import pickle
 import torch
 import pandas as pd
-import numpy as np
 import datetime as dt
-from tqdm import tqdm, trange
+from tqdm import trange
 
-from torch.nn import BCEWithLogitsLoss, BCELoss
-from keras.preprocessing.sequence import pad_sequences
-from transformers import (BertTokenizer, DistilBertTokenizer, BertConfig, DistilBertConfig,
-                          BertForSequenceClassification, DistilBertForSequenceClassification,
-                          AdamW, get_linear_schedule_with_warmup)
+from torch.nn import BCEWithLogitsLoss
+from keras_preprocessing.sequence import pad_sequences
+from transformers import (get_linear_schedule_with_warmup, 
+                          BertTokenizer, DistilBertTokenizer, 
+                          BertConfig, DistilBertConfig,
+                          BertForSequenceClassification, 
+                          DistilBertForSequenceClassification
+                          )
 
-from sklearn.metrics import (f1_score, accuracy_score, 
-                            multilabel_confusion_matrix, classification_report)
+from sklearn.metrics import (f1_score, classification_report)
 
 from utils import set_all_seeds, initialize_device_settings, format_time
-from data_handler import (split_train_dev, create_dataloader)                     
+from data_handler import split_train_dev, create_dataloader                 
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ logging.basicConfig(
 
 
 def train_multilabel(train_dataloader, model, device, optimizer, scheduler, 
-                        num_labels, max_grad_norm=1.0):
+                     num_labels, max_grad_norm=1.0):
 
     # Set our model to training mode (as opposed to evaluation mode)
     model.train()
@@ -41,7 +41,7 @@ def train_multilabel(train_dataloader, model, device, optimizer, scheduler,
     nb_tr_examples, nb_tr_steps = 0, 0
     train_loss_set = []
     # Train the data for one epoch
-    for step, batch in enumerate(train_dataloader):
+    for batch in train_dataloader:
         # Add batch to GPU
         batch = tuple(t.to(device) for t in batch)
         # Unpack the inputs from our dataloader
@@ -60,9 +60,10 @@ def train_multilabel(train_dataloader, model, device, optimizer, scheduler,
         # Backward pass
         loss.backward()
         # This is to help prevent the "exploding gradients" problem.
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)      
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)      
         # Update parameters and take a step using the computed gradient
         optimizer.step()
+        # update learning rate
         scheduler.step()
         # Update tracking variables
         tr_loss += loss.item()
@@ -78,10 +79,10 @@ def eval_multilabel(sample_dataloader, model, device):
     # Put model in evaluation mode to evaluate loss on the validation set
     model.eval()
     # Variables to gather full output
-    logit_preds, true_labels, pred_labels = [],[],[]
+    true_labels, pred_labels, logit_preds = [],[],[]
 
     # Predict
-    for i, batch in enumerate(sample_dataloader):
+    for batch in sample_dataloader:
       batch = tuple(t.to(device) for t in batch)
       # Unpack the inputs from our dataloader
       b_input_ids, b_input_mask, b_labels = batch
@@ -92,9 +93,10 @@ def eval_multilabel(sample_dataloader, model, device):
         b_logit_pred = outs[0]
         pred_label = torch.sigmoid(b_logit_pred)
 
-      b_logit_pred = b_logit_pred.detach().cpu().numpy()
-      pred_label = pred_label.to('cpu').numpy()
+      # Move logits and labels to CPU
+      b_logit_pred = b_logit_pred.detach().cpu().numpy()      
       b_labels = b_labels.to('cpu').numpy()
+      pred_label = pred_label.to('cpu').numpy()
 
       logit_preds.append(b_logit_pred)
       true_labels.append(b_labels)
@@ -261,9 +263,12 @@ def main():
     test_dia_dataloader = create_dataloader(test_dia_inputs, test_dia_masks, 
                                         test_dia_labels, args.batch_size, 
                                         train = False)
-
+    
+    #############################################################################
+    # Training
     # Create model
     if args.train:
+        # load config
         if model_class == "BERT":
             config = BertConfig.from_pretrained(args.lang_model, num_labels=num_labels)   
             config.hidden_dropout_prob = 0.1  
@@ -271,7 +276,8 @@ def main():
                 args.lang_model,
                 num_labels = num_labels,
                 output_attentions = False,
-                output_hidden_states = False
+                output_hidden_states = False,
+                problem_type="multi_label_classification"
             )
 
         if model_class == "DistilBERT":
@@ -281,7 +287,8 @@ def main():
                 args.lang_model,
                 num_labels = num_labels,
                 output_attentions = False,
-                output_hidden_states = False
+                output_hidden_states = False,
+                problem_type="multi_label_classification"
             )
         model.cuda()
 
@@ -295,7 +302,7 @@ def main():
             {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
             'weight_decay_rate': 0.0}
         ]
-        optimizer = AdamW(
+        optimizer = torch.optim.AdamW(
             optimizer_grouped_parameters,
             lr=args.lr,
             eps = 1e-8
@@ -309,7 +316,6 @@ def main():
             num_training_steps=total_steps
         )
     
-        # train model
         # Main Loop
         print("=================== Train ================")
         print("##### Language Model:", args.lang_model, ",", "learning rate:", args.lr)
@@ -350,7 +356,6 @@ def main():
         clf_report_syn = classification_report(true_bools_syn, pred_bools_syn, target_names=cats, digits=3)
         print(clf_report_syn)
 
-
         # EVALUATION: TEST DIA SET
         pred_bools_dia, true_bools_dia, f1_test_dia = eval_multilabel(
             test_dia_dataloader, model=model, device=device
@@ -364,7 +369,6 @@ def main():
         if args.save_cr:
             pickle.dump(clf_report_syn, open(args.output_path+'clf_report_'+args.lang_model+'_test_syn_'+str(num_labels)+end+'.txt','wb'))
             pickle.dump(clf_report_dia, open(args.output_path+'clf_report_'+args.lang_model+'_test_dia_'+str(num_labels)+end+'.txt','wb'))
-
 
         if args.save_prediction:
             test_syn_df["category_pred"] = pred_bools_syn

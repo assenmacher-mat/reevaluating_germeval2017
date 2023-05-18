@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-import os
 import logging
 import argparse
 import time
-import pickle
 import torch
 import pandas as pd
 import numpy as np
 import datetime as dt
-from tqdm import tqdm, trange
+from tqdm import trange
 
-from keras.preprocessing.sequence import pad_sequences
+from keras_preprocessing.sequence import pad_sequences
 from transformers import (BertTokenizer, DistilBertTokenizer, BertConfig, DistilBertConfig,
                           BertForSequenceClassification, DistilBertForSequenceClassification,
                           AdamW, get_linear_schedule_with_warmup)
@@ -36,7 +34,7 @@ def train(train_dataloader, model, device, optimizer, scheduler,
     loss_values = []
 
     # For each batch of training data...
-    for step, batch in enumerate(train_dataloader):
+    for batch in train_dataloader:
         # Add batch to GPU
         batch = tuple(t.to(device) for t in batch)
         # Unpack the inputs from our dataloader
@@ -166,7 +164,7 @@ def main():
 
     ################################################################################
     set_all_seeds(args.seed)
-    device, n_gpu = initialize_device_settings(use_cuda=True)
+    device, _ = initialize_device_settings(use_cuda=True)
 
     # Load data
     train_df = pd.read_csv(args.df_path + args.train_data, delimiter = '\t')

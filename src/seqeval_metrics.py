@@ -13,7 +13,6 @@ def get_entities(seq, suffix=False):
     Returns:
         list: list of (chunk_type, chunk_start, chunk_end).
     Example:
-        >>> from seqeval.metrics.sequence_labeling import get_entities
         >>> seq = ['B-PER', 'I-PER', 'O', 'B-LOC']
         >>> get_entities(seq)
         [('PER', 0, 1), ('LOC', 3, 3)]
@@ -112,7 +111,7 @@ def start_of_chunk(prev_tag, tag, prev_type, type_):
     return chunk_start
 
 
-def seq_f1_score(y_true, y_pred, average='micro', suffix=False, overlap=False):
+def seq_f1_score(y_true, y_pred, suffix=False, overlap=False, true_entities = None):
     """Compute the F1 score.
     The F1 score can be interpreted as a weighted average of the precision and
     recall, where an F1 score reaches its best value at 1 and worst score at 0.
@@ -131,7 +130,9 @@ def seq_f1_score(y_true, y_pred, average='micro', suffix=False, overlap=False):
         >>> f1_score(y_true, y_pred)
         0.50
     """
-    true_entities = set(get_entities(y_true, suffix))
+    if true_entities is None:
+        true_entities = set(get_entities(y_true, suffix))
+    
     pred_entities = set(get_entities(y_pred, suffix))
 
     nb_pred = len(pred_entities)
@@ -179,7 +180,7 @@ def seq_accuracy_score(y_true, y_pred):
     return score
 
 
-def precision_score(y_true, y_pred, average='micro', suffix=False, overlap=False):
+def precision_score(y_true, y_pred, suffix=False, overlap=False, true_entities = None):
     """Compute the precision.
     The precision is the ratio ``tp / (tp + fp)`` where ``tp`` is the number of
     true positives and ``fp`` the number of false positives. The precision is
@@ -197,7 +198,8 @@ def precision_score(y_true, y_pred, average='micro', suffix=False, overlap=False
         >>> precision_score(y_true, y_pred)
         0.50
     """
-    true_entities = set(get_entities(y_true, suffix))
+    if true_entities is None:
+        true_entities = set(get_entities(y_true, suffix))
     pred_entities = set(get_entities(y_pred, suffix))
 
     nb_pred = len(pred_entities)
@@ -213,7 +215,7 @@ def precision_score(y_true, y_pred, average='micro', suffix=False, overlap=False
     return score
 
 
-def recall_score(y_true, y_pred, average='micro', suffix=False, overlap=False):
+def recall_score(y_true, y_pred, suffix=False, overlap=False, true_entities = None):
     """Compute the recall.
     The recall is the ratio ``tp / (tp + fn)`` where ``tp`` is the number of
     true positives and ``fn`` the number of false negatives. The recall is
@@ -231,7 +233,8 @@ def recall_score(y_true, y_pred, average='micro', suffix=False, overlap=False):
         >>> recall_score(y_true, y_pred)
         0.50
     """
-    true_entities = set(get_entities(y_true, suffix))
+    if true_entities is None:
+        true_entities = set(get_entities(y_true, suffix))
     pred_entities = set(get_entities(y_pred, suffix))
 
     nb_true = len(true_entities)
@@ -277,7 +280,7 @@ def performance_measure(y_true, y_pred):
     return performace_dict
 
 
-def seq_classification_report(y_true, y_pred, digits=3, suffix=False, overlap=False):
+def seq_classification_report(y_true, y_pred, digits=3, suffix=False, overlap=False, true_entities = None):
     """Build a text report showing the main classification metrics.
     Args:
         y_true : 2d array. Ground truth (correct) target values.
@@ -299,7 +302,8 @@ def seq_classification_report(y_true, y_pred, digits=3, suffix=False, overlap=Fa
           macro avg       0.50      0.50      0.50         2
         <BLANKLINE>
     """
-    true_entities = set(get_entities(y_true, suffix))
+    if true_entities is None:
+        true_entities = set(get_entities(y_true, suffix))
     pred_entities = set(get_entities(y_pred, suffix))
 
     if overlap: 

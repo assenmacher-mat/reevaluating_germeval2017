@@ -14,23 +14,25 @@ def get_tags_list(df_path):
     get list of BIO tags.
 
     Arg:
-      df_path: data path 
+      df_path: data path
     """
-
     train_df = pd.read_csv(df_path + 'train_df_opinion.tsv', delimiter = '\t')
     dev_df = pd.read_csv(df_path + 'dev_df_opinion.tsv', delimiter = '\t')
     test_syn_df = pd.read_csv(df_path + "test_syn_df_opinion.tsv", delimiter = '\t')
     test_dia_df = pd.read_csv(df_path + "test_dia_df_opinion.tsv", delimiter = '\t')
-    
+
+    # prepare labels    
+    train_df = bio_tagging_df(train_df, 'train_df')
+    dev_df = bio_tagging_df(dev_df, 'dev_df')
+    test_syn_df = bio_tagging_df(test_syn_df, 'test_syn_df')
+    test_dia_df = bio_tagging_df(test_dia_df, 'test_dia_df')
+
     # concatenate data frames
     full_df = pd.concat([train_df, dev_df, test_syn_df, test_dia_df])
-
-    # prepare labels
-    _, entities = prep_df(full_df)
-    full_df = bio_tagging_df(full_df)
+    entities = list(set([ent[0] for elem in full_df["entity"] for ent in elem]))
     labels = full_df.bio_tags.values
-    labels_unlist = [list(chain.from_iterable(lab)) for lab in labels]
-    labels_flat = [flatten_list(lab) for lab in labels_unlist]
+    #labels_unlist = [list(chain.from_iterable(lab)) for lab in labels]
+    labels_flat = [flatten_list(lab) for lab in labels]
 
     # create tags
     tag_values = [list(set(tag)) for tag in labels_flat]
@@ -68,7 +70,7 @@ def get_sentences_biotags(tokenizer, sentences, labels, max_len):
     '''
     
     sentences_unlist = [list(chain.from_iterable(sent)) for sent in sentences]
-    labels_unlist = [list(chain.from_iterable(lab)) for lab in labels]    
+    labels_unlist = [list(chain.from_iterable(lab)) for lab in labels]
     sentences_flat = [flatten_list(sent) for sent in sentences_unlist]
     labels_flat = [flatten_list(lab) for lab in labels_unlist]
     

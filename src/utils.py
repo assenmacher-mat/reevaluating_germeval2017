@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import random
 import os
-import time
 import datetime as dt
 import logging
 import numpy as np
@@ -28,7 +27,7 @@ def set_all_seeds(seed=42, deterministic_cudnn=True):
     if deterministic_cudnn:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        torch.set_deterministic(True)
+        torch.use_deterministic_algorithms(True)
 
 
 def initialize_device_settings(use_cuda=True, local_rank=-1, use_amp=None):
@@ -71,9 +70,9 @@ def flatten_list(lists):
     ''' Flattens a list. '''
     final = []
     for i in lists:
-      if type(i) is list:
-        for j in i:
-          final.append(j)
-      else:
-        final.append(i)
+        if type(i) is list:
+            for j in i:
+                final.append(j)
+        else:
+            final.append(i)
     return final

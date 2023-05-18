@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-import os
 import logging
 import argparse
 import time
 import pickle
 import torch
 import pandas as pd
-import numpy as np
 import datetime as dt
-from tqdm import tqdm, trange
-
-from keras.preprocessing.sequence import pad_sequences
-from transformers import (AdamW, get_linear_schedule_with_warmup,
+from tqdm import trange
+from itertools import compress
+from keras_preprocessing.sequence import pad_sequences
+from transformers import (get_linear_schedule_with_warmup,
                           BertTokenizer, BertConfig,
                           DistilBertTokenizer, DistilBertConfig)
 
-from utils import set_all_seeds, initialize_device_settings, format_time
+from utils import set_all_seeds, initialize_device_settings, format_time, flatten_list
 from data_prep import bio_tagging_df
-from data_handler import (get_tags_list, get_sentences_biotags, split_train_dev, create_dataloader)
+from data_handler import (get_tags_list, get_sentences_biotags, 
+                          split_train_dev, create_dataloader)
 from modeling_token import TokenBERT, TokenDistilBERT
-from seqeval_metrics import (seq_accuracy_score, seq_f1_score, 
+from seqeval_metrics import (seq_f1_score, seq_accuracy_score,
                              seq_classification_report)
+
 set_all_seeds()
 
 logger = logging.getLogger(__name__)
@@ -31,29 +31,34 @@ logging.basicConfig(
 )
 
 
-def training(train_dataloader, model, device, optimizer, scheduler, max_grad_norm=1.0):
+def training(train_dataloader, model, device, optimizer, scheduler, 
+             max_grad_norm=1.0):
+    # set model to training mode
     model.train()
-    tr_loss = 0
+    # tracking variables
+    tr_loss = 0 # running loss
     nb_tr_examples, nb_tr_steps = 0, 0
-
-    for step, batch in enumerate(train_dataloader):
-        # add batch to gpu
+    # train the data for one epoch
+    for batch in train_dataloader:
+        # add batch to GPU
         batch = tuple(t.to(device) for t in batch)
+        # Unpack the inputs from our dataloader
         b_input_ids, b_input_mask, b_labels = batch
-        
+        # Clear out the gradients (by default they accumulate)
         model.zero_grad()
+
         # forward pass
         loss = model(
             b_input_ids,
             attention_mask=b_input_mask, 
             labels=b_labels
         )
-        
+
         # backward pass
         loss.backward()        
         # gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-        # update parameters
+        # update parameters and take a step using the computed gradient
         optimizer.step()
         # update learning rate
         scheduler.step()
@@ -61,21 +66,24 @@ def training(train_dataloader, model, device, optimizer, scheduler, max_grad_nor
         tr_loss += loss.item()
         nb_tr_examples += b_input_ids.size(0)
         nb_tr_steps += 1
-    
     print("Train loss: {}".format(tr_loss/nb_tr_steps))
-        
-    return model, optimizer, scheduler, tr_loss
+    return model, optimizer, scheduler
 
 
-def evaluation(sample_dataloader, model, device, tag_values):
+def evaluation(sample_dataloader, model, device, tag_values, true_entities):
+    # Put model in evaluation mode
     model.eval()
-    true_labels, predictions, validation_loss_values, tokenized_texts = [], [], [], []
+    # Variables to gather full output
+    true_labels, predictions, tokenized_texts = [], [], []
     
-    for step, batch in enumerate(sample_dataloader):
+    # Predict
+    for _, batch in enumerate(sample_dataloader):
         batch = tuple(t.to(device) for t in batch)
+        # Unpack the inputs from our dataloader
         b_input_ids, b_input_mask, b_label_ids = batch
         
         with torch.no_grad():
+            # forward pass
             tags = model(
                 b_input_ids,
                 attention_mask=b_input_mask)
@@ -90,10 +98,10 @@ def evaluation(sample_dataloader, model, device, tag_values):
         tokenized_texts.extend(input_ids)
         true_labels.extend(label_ids)
         predictions.extend(tags)
-    
+
     dev_tags = [tag_values[l_i] for l in true_labels
                                   for l_i in l if tag_values[l_i] != "PAD"]
-    pred_tags = [tag_values[p_i] for p, l in zip(predictions, true_labels)
+    pred_tags = [list(compress(tag_values, p_i>0.5)) for p, l in zip(predictions, true_labels)
                                  for p_i, l_i in zip(p, l) if tag_values[l_i] != "PAD"]
     # calculate accuracy score
     dev_accuracy_score = seq_accuracy_score(dev_tags, pred_tags)
@@ -133,12 +141,12 @@ def main():
     parser.add_argument('--output_path', type=str, default='./output/subtaskD/', help='The output directory of the model and predictions.')
     parser.add_argument("--train", default=True, action="store_true", help="Flag for training.")
     parser.add_argument("--use_crf", default=False, action="store_true", help="Flag for CRF usage.")
-    parser.add_argument("--save_cr", default=False, action="store_true", help="Flag for saving classification report.")
+    parser.add_argument("--save_cr", default=True, action="store_true", help="Flag for saving classification report.")
     args = parser.parse_args()
     #############################################################################
     # Settings
     set_all_seeds(args.seed)
-    device, n_gpu = initialize_device_settings(use_cuda=True)
+    device, _ = initialize_device_settings(use_cuda=True)
 
     lm = args.lang_model
     if args.use_crf:
@@ -147,12 +155,33 @@ def main():
 
     #############################################################################
     # Load and prepare data by adding BIO tags
-    train_df = bio_tagging_df(pd.read_csv(args.df_path + args.train_data, delimiter = '\t'))
-    dev_df = bio_tagging_df(pd.read_csv(args.df_path + args.dev_data, delimiter = '\t'))
-    test_syn_df = bio_tagging_df(pd.read_csv(args.df_path + args.test_data1, delimiter = '\t'))
-    test_dia_df = bio_tagging_df(pd.read_csv(args.df_path + args.test_data2, delimiter = '\t'))
-    
-    # 1. Create a tokenizer
+    train_df = bio_tagging_df(pd.read_csv(args.df_path + args.train_data, delimiter = '\t'), "train_df")
+    dev_df = bio_tagging_df(pd.read_csv(args.df_path + args.dev_data, delimiter = '\t'), "dev_df")
+    test_syn_df = bio_tagging_df(pd.read_csv(args.df_path + args.test_data1, delimiter = '\t'), "test_syn_df")
+    test_dia_df = bio_tagging_df(pd.read_csv(args.df_path + args.test_data2, delimiter = '\t'), "test_dia_df")
+
+    ## get tag values and dictionary
+    # concatenate data frames
+    full_df = pd.concat([train_df, dev_df, test_syn_df, test_dia_df])
+    labels = full_df.bio_tags.values
+    labels_flat = [flatten_list(lab) for lab in labels]
+    # create tags
+    tag_values = [list(set(tag)) for tag in labels_flat]
+    tag_values = list(set(flatten_list(tag_values)))
+    tag_values.append('PAD')
+    tag2idx = {t: i for i, t in enumerate(tag_values)}
+
+    train_df.to_csv(args.df_path+"train_bio.tsv", sep="\t", index = False, header = True)
+    dev_df.to_csv(args.df_path+"dev_bio.tsv", sep="\t", index = False, header = True)
+    test_syn_df.to_csv(args.df_path+"test_syn_bio.tsv", sep="\t", index = False, header = True)
+    test_dia_df.to_csv(args.df_path+"test_dia_bio.tsv", sep="\t", index = False, header = True)
+
+    train_entities = train_df['entity']
+    dev_entities = train_df['entity']
+    test_syn_entities = train_df['entity']
+    test_dia_entities = train_df['entity']
+
+    # Create a tokenizer
     lower_case = False
     if args.lang_model[-7:] == "uncased":
         lower_case = True
@@ -180,9 +209,6 @@ def main():
     tokenized_texts_dia, labels_dia = get_sentences_biotags(tokenizer, sentences_dia, labels_dia, args.max_len)
 
 
-    # get tag values and dictionary
-    tag_values, tag2idx, entities = get_tags_list(args.df_path)
-    
     # pad input_ids and tags
     input_ids = pad_sequences([tokenizer.convert_tokens_to_ids(txt) for txt in tokenized_texts],
                           maxlen = args.max_len, value=0.0, padding="post",
@@ -217,45 +243,49 @@ def main():
         train_df, dev_df, attention_masks, input_ids, tags)
 
     # transform to torch tensor
-    train_inputs = torch.tensor(train_inputs, dtype = torch.long)
-    dev_inputs = torch.tensor(dev_inputs, dtype = torch.long)
+    train_inputs = torch.tensor(train_inputs)
+    dev_inputs = torch.tensor(dev_inputs)
 
-    train_labels = torch.tensor(train_labels, dtype = torch.long)
-    dev_labels = torch.tensor(dev_labels, dtype = torch.long)
+    train_labels = torch.tensor(train_labels)
+    dev_labels = torch.tensor(dev_labels)
 
-    train_masks = torch.tensor(train_masks, dtype = torch.uint8)
-    dev_masks = torch.tensor(dev_masks, dtype = torch.uint8)
+    train_masks = torch.tensor(train_masks)
+    dev_masks = torch.tensor(dev_masks)
 
-    test_syn_inputs = torch.tensor(input_ids_syn, dtype = torch.long)
-    test_syn_labels = torch.tensor(tags_syn, dtype = torch.long)
-    test_syn_masks = torch.tensor(attention_masks_syn, dtype = torch.uint8)
+    test_syn_inputs = torch.tensor(input_ids_syn)
+    test_syn_labels = torch.tensor(tags_syn)
+    test_syn_masks = torch.tensor(attention_masks_syn)
 
-    test_dia_inputs = torch.tensor(input_ids_dia, dtype = torch.long)
-    test_dia_labels = torch.tensor(tags_dia, dtype = torch.long)
-    test_dia_masks = torch.tensor(attention_masks_dia, dtype = torch.uint8)
+    test_dia_inputs = torch.tensor(input_ids_dia)
+    test_dia_labels = torch.tensor(tags_dia)
+    test_dia_masks = torch.tensor(attention_masks_dia)
 
     # create DataLoader
-    train_dataloader = create_dataloader(train_inputs, train_masks, train_labels, args.batch_size, train = True)
-    dev_dataloader = create_dataloader(dev_inputs, dev_masks, dev_labels, args.batch_size, train = False)  
+    train_dataloader = create_dataloader(train_inputs, train_masks, 
+                                         train_labels, args.batch_size, train = True)
+    dev_dataloader = create_dataloader(dev_inputs, dev_masks, 
+                                       dev_labels, args.batch_size, train = False)  
 
-    test_syn_dataloader = create_dataloader(test_syn_inputs, test_syn_masks, test_syn_labels, args.batch_size, train = False)   
-    test_dia_dataloader = create_dataloader(test_dia_inputs, test_dia_masks, test_dia_labels, args.batch_size, train = False)
+    test_syn_dataloader = create_dataloader(test_syn_inputs, test_syn_masks, 
+                                            test_syn_labels, args.batch_size, train = False)   
+    test_dia_dataloader = create_dataloader(test_dia_inputs, test_dia_masks, 
+                                            test_dia_labels, args.batch_size, train = False)
 
 
     #############################################################################
     # Training
     if args.train:
         # Load Config
-        if model_class=="BERT":
+        if model_class == "BERT":
             config = BertConfig.from_pretrained(args.lang_model, num_labels=len(tag2idx))
             config.hidden_dropout_prob = 0.1 # dropout probability for all fully connected layers
                                              # in the embeddings, encoder, and pooler; default = 0.1
             model = TokenBERT(
-                model_name=args.lang_model, 
+                model_name=args.lang_model,
                 num_labels=len(tag2idx),
                 use_crf=args.use_crf)
 
-        if model_class=="DistilBERT":
+        if model_class == "DistilBERT":
             config = DistilBertConfig.from_pretrained(args.lang_model, num_labels=len(tag2idx))   
             config.hidden_dropout_prob = 0.1       
             model = TokenDistilBERT(
@@ -274,7 +304,7 @@ def main():
             {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
                 'weight_decay_rate': 0.0}
         ]
-        optimizer = AdamW(
+        optimizer = torch.optim.AdamW(
             optimizer_grouped_parameters,
             lr=args.lr,
             eps=1e-8
@@ -290,16 +320,16 @@ def main():
 
         # Main Loop
         print("=================== Train ================")
-        print("##### Language Model:", args.lang_model, ",", "use CRF:", args.use_crf, ",", "learning rate:", args.lr, ",", "DROPOUT:", config.hidden_dropout_prob)
+        print("##### Language Model:", args.lang_model, ",", "use CRF:", args.use_crf, ",", "learning rate:", args.lr)
         print()
 
         track_time = time.time()
-                
+        # trange is a tqdm wrapper around the normal python range
         for epoch in trange(args.epochs, desc="Epoch"):
             print("Epoch: %4i"%epoch, dt.datetime.now())
             
             # TRAINING
-            model, optimizer, scheduler, tr_loss = training(
+            model, optimizer, scheduler = training(
                 train_dataloader, 
                 model=model, 
                 device=device, 
@@ -309,24 +339,24 @@ def main():
             
             # EVALUATION: TRAIN SET
             y_true_train, y_pred_train, f1s_train, f1s_overlap_train = evaluation(
-                    train_dataloader, model=model, device=device, tag_values=tag_values)
+                    train_dataloader, model=model, device=device, tag_values=tag_values, true_entities = train_entities)
             print("TRAIN: F1 Exact %.3f | F1 Overlap %.3f"%(f1s_train, f1s_overlap_train))
             
             # EVALUATION: DEV SET
             y_true_dev, y_pred_dev, f1s_dev, f1s_overlap_dev = evaluation(
-                    dev_dataloader, model=model, device=device, tag_values=tag_values)
+                    dev_dataloader, model=model, device=device, tag_values=tag_values, true_entities = dev_entities)
             print("EVAL: F1 Exact %.3f | F1 Overlap %.3f"%(f1s_dev, f1s_overlap_dev))
         
         print("  Training and validation took in total: {:}".format(format_time(time.time()-track_time)))
 
         # EVALUATION: TEST SYN SET
         y_true_test_syn, y_pred_test_syn, f1s_test_syn, f1s_overlap_test_syn = evaluation(
-                test_syn_dataloader, model=model, device=device, tag_values=tag_values)
+                test_syn_dataloader, model=model, device=device, tag_values=tag_values, true_entities = test_syn_entities)
         print("TEST SYN: F1 Exact %.3f | F1 Overlap %.3f"%(f1s_test_syn, f1s_overlap_test_syn))
                 
         # EVALUATION: TEST DIA SET
         y_true_test_dia, y_pred_test_dia, f1s_test_dia, f1s_overlap_test_dia = evaluation(
-                test_dia_dataloader, model=model, device=device, tag_values=tag_values)
+                test_dia_dataloader, model=model, device=device, tag_values=tag_values, true_entities = test_dia_entities)
         print("TEST DIA: F1 Exact %.3f | F1 Overlap %.3f"%(f1s_test_dia, f1s_overlap_test_dia))
         
         # Print classification report
@@ -341,10 +371,10 @@ def main():
         print("Classification report for TEST DIA (Overlap):", cr_report_dia_overlap)
 
         if args.save_cr:            
-            pickle.dump(cr_report_syn, open(args.output_path+'classification_report_'+lm+str(batch_size)+'_test_syn_exact.txt','wb'))
-            pickle.dump(cr_report_dia, open(args.output_path+'classification_report_'+lm+str(batch_size)+'_test_dia_exact.txt','wb'))
-            pickle.dump(cr_report_syn_overlap, open(args.output_path+'classification_report_'+lm+str(batch_size)+'_test_syn_overlap.txt','wb'))
-            pickle.dump(cr_report_dia_overlap, open(args.output_path+'classification_report_'+lm+str(batch_size)+'_test_dia_overlap.txt','wb'))
+            pickle.dump(cr_report_syn, open(args.output_path+'classification_report_'+lm+str(args.batch_size)+'_test_syn_exact.txt','wb'))
+            pickle.dump(cr_report_dia, open(args.output_path+'classification_report_'+lm+str(args.batch_size)+'_test_dia_exact.txt','wb'))
+            pickle.dump(cr_report_syn_overlap, open(args.output_path+'classification_report_'+lm+str(args.batch_size)+'_test_syn_overlap.txt','wb'))
+            pickle.dump(cr_report_dia_overlap, open(args.output_path+'classification_report_'+lm+str(args.batch_size)+'_test_dia_overlap.txt','wb'))
 
 
 if __name__ == "__main__":
